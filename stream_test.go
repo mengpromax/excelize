@@ -150,19 +150,53 @@ func TestStreamWriter(t *testing.T) {
 	assert.NoError(t, file.Close())
 }
 
-func TestStreamSetColWidth(t *testing.T) {
+func TestStreamSetColStyle(t *testing.T) {
 	file := NewFile()
 	defer func() {
 		assert.NoError(t, file.Close())
 	}()
 	streamWriter, err := file.NewStreamWriter("Sheet1")
 	assert.NoError(t, err)
+	assert.NoError(t, streamWriter.SetColStyle(3, 2, 0))
+	assert.Equal(t, ErrColumnNumber, streamWriter.SetColStyle(0, 3, 20))
+	assert.Equal(t, ErrColumnNumber, streamWriter.SetColStyle(MaxColumns+1, 3, 20))
+	assert.Equal(t, newInvalidStyleID(2), streamWriter.SetColStyle(1, 3, 2))
+	assert.NoError(t, streamWriter.SetRow("A1", []interface{}{"A", "B", "C"}))
+	assert.Equal(t, ErrStreamSetColStyle, streamWriter.SetColStyle(2, 3, 0))
+
+	file = NewFile()
+	defer func() {
+		assert.NoError(t, file.Close())
+	}()
+	// Test set column style with unsupported charset style sheet
+	file.Styles = nil
+	file.Pkg.Store(defaultXMLPathStyles, MacintoshCyrillicCharset)
+	streamWriter, err = file.NewStreamWriter("Sheet1")
+	assert.NoError(t, err)
+	assert.EqualError(t, streamWriter.SetColStyle(3, 2, 0), "XML syntax error on line 1: invalid UTF-8")
+}
+
+func TestStreamSetColWidth(t *testing.T) {
+	file := NewFile()
+	defer func() {
+		assert.NoError(t, file.Close())
+	}()
+	styleID, err := file.NewStyle(&Style{
+		Fill: Fill{Type: "pattern", Color: []string{"E0EBF5"}, Pattern: 1},
+	})
+	if err != nil {
+		fmt.Println(err)
+	}
+	streamWriter, err := file.NewStreamWriter("Sheet1")
+	assert.NoError(t, err)
 	assert.NoError(t, streamWriter.SetColWidth(3, 2, 20))
+	assert.NoError(t, streamWriter.SetColStyle(3, 2, styleID))
 	assert.Equal(t, ErrColumnNumber, streamWriter.SetColWidth(0, 3, 20))
 	assert.Equal(t, ErrColumnNumber, streamWriter.SetColWidth(MaxColumns+1, 3, 20))
 	assert.Equal(t, ErrColumnWidth, streamWriter.SetColWidth(1, 3, MaxColumnWidth+1))
 	assert.NoError(t, streamWriter.SetRow("A1", []interface{}{"A", "B", "C"}))
 	assert.Equal(t, ErrStreamSetColWidth, streamWriter.SetColWidth(2, 3, 20))
+	assert.NoError(t, streamWriter.Flush())
 }
 
 func TestStreamSetPanes(t *testing.T) {
@@ -317,7 +351,6 @@ func TestStreamSetRowWithStyle(t *testing.T) {
 	defer func() {
 		assert.NoError(t, file.Close())
 	}()
-	zeroStyleID := 0
 	grayStyleID, err := file.NewStyle(&Style{Font: &Font{Color: "777777"}})
 	assert.NoError(t, err)
 	blueStyleID, err := file.NewStyle(&Style{Font: &Font{Color: "0000FF"}})
@@ -337,7 +370,7 @@ func TestStreamSetRowWithStyle(t *testing.T) {
 
 	ws, err := file.workSheetReader("Sheet1")
 	assert.NoError(t, err)
-	for colIdx, expected := range []int{grayStyleID, zeroStyleID, zeroStyleID, blueStyleID, blueStyleID} {
+	for colIdx, expected := range []int{grayStyleID, grayStyleID, grayStyleID, blueStyleID, blueStyleID} {
 		assert.Equal(t, expected, ws.SheetData.Row[0].C[colIdx].S)
 	}
 }
@@ -372,6 +405,29 @@ func TestStreamSetCellValFunc(t *testing.T) {
 		complex64(5 + 10i),
 	} {
 		assert.NoError(t, sw.setCellValFunc(c, val))
+	}
+}
+
+func TestSetCellIntFunc(t *testing.T) {
+	cases := []struct {
+		val    interface{}
+		target string
+	}{
+		{val: 128, target: "128"},
+		{val: int8(-128), target: "-128"},
+		{val: int16(-32768), target: "-32768"},
+		{val: int32(-2147483648), target: "-2147483648"},
+		{val: int64(-9223372036854775808), target: "-9223372036854775808"},
+		{val: uint(128), target: "128"},
+		{val: uint8(255), target: "255"},
+		{val: uint16(65535), target: "65535"},
+		{val: uint32(4294967295), target: "4294967295"},
+		{val: uint64(18446744073709551615), target: "18446744073709551615"},
+	}
+	for _, c := range cases {
+		cell := &xlsxC{}
+		setCellIntFunc(cell, c.val)
+		assert.Equal(t, c.target, cell.V)
 	}
 }
 
