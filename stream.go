@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -139,6 +140,13 @@ func (f *File) NewStreamWriter(sheet string) (*StreamWriter, error) {
 	_, _ = sw.rawData.WriteString(xml.Header + `<worksheet` + templateNamespaceIDMap)
 	bulkAppendFields(&sw.rawData, sw.worksheet, 2, 3)
 	return sw, err
+}
+
+// cellPool use pooling to avoid a lot of allocations.
+var cellPool = sync.Pool{
+	New: func() any {
+		return new(xlsxC)
+	},
 }
 
 // AddTable creates an Excel table for the StreamWriter using the given
@@ -412,23 +420,29 @@ func (sw *StreamWriter) SetRow(cell string, values []interface{}, opts ...RowOpt
 		if err != nil {
 			return err
 		}
-		c := xlsxC{R: ref, S: sw.worksheet.prepareCellStyle(col, row, options.StyleID)}
+
+		c := cellPool.Get().(*xlsxC)
+		c.R = ref
+		c.S = sw.worksheet.prepareCellStyle(col, row, options.StyleID)
+
 		var s int
 		if v, ok := val.(Cell); ok {
 			s, val = v.StyleID, v.Value
-			setCellFormula(&c, v.Formula)
+			setCellFormula(c, v.Formula)
 		} else if v, ok := val.(*Cell); ok && v != nil {
 			s, val = v.StyleID, v.Value
-			setCellFormula(&c, v.Formula)
+			setCellFormula(c, v.Formula)
 		}
 		if s > 0 {
 			c.S = s
 		}
-		if err = sw.setCellValFunc(&c, val); err != nil {
+		if err = sw.setCellValFunc(c, val); err != nil {
 			_, _ = sw.rawData.WriteString(`</row>`)
 			return err
 		}
 		writeCell(&sw.rawData, c)
+
+		cellPool.Put(c)
 	}
 	_, _ = sw.rawData.WriteString(`</row>`)
 	return sw.rawData.Sync()
@@ -603,7 +617,11 @@ func setCellIntFunc(c *xlsxC, val interface{}) {
 }
 
 // writeCell constructs a cell XML and writes it to the buffer.
-func writeCell(buf *bufferedWriter, c xlsxC) {
+func writeCell(buf *bufferedWriter, c *xlsxC) {
+	if c == nil {
+		return // unlikely
+	}
+
 	_, _ = buf.WriteString(`<c`)
 	if c.XMLSpace.Value != "" {
 		_, _ = buf.WriteString(` xml:`)
